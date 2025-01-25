@@ -1,2 +1,4 @@
 .env
 flask_session/
+app.log
+notes.md
