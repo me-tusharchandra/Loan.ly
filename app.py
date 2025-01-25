@@ -224,12 +224,15 @@ class Loanly:
                 self.twilio_auth_token
             )
             
+            # Convert application_type for display
+            display_type = "credit card" if application_type == "credit_card" else application_type
+            
             if result == "APPROVED":
-                sms_message = f"Congratulations {customer_name}! Your {application_type} application has been APPROVED. Our team will contact you shortly with next steps."
+                sms_message = f"Congratulations {customer_name}! Your {display_type} application has been APPROVED. Our team will contact you shortly with next steps."
             elif result == "REJECTED":
-                sms_message = f"We regret to inform you that your {application_type} application has been REJECTED at this time. Please try again after 3 months."
+                sms_message = f"We regret to inform you that your {display_type} application has been REJECTED at this time. Please try again after 3 months."
             else:
-                sms_message = f"Thank you for your {application_type} application. We need some additional verification. Our team will contact you shortly."
+                sms_message = f"Thank you for your {display_type} application. We need some additional verification. Our team will contact you shortly."
             
             print(f"Sending SMS: {sms_message}")
             message = client.messages.create(
@@ -424,6 +427,9 @@ def handle_call():
         previous_response = request.values.get('SpeechResult', '')
         phone_number = request.args.get('phone_number') or request.form.get('phone_number')
         
+        # Convert application_type for display
+        display_type = "credit card" if application_type == "credit_card" else application_type
+        
         # Set development environment for testing
         os.environ['FLASK_ENV'] = 'development'
         
@@ -444,7 +450,10 @@ def handle_call():
         if step == 0:
             print("Starting new call flow (step 0)")
             # First just ask if it's a good time to talk
-            twiml_response.say(f"Hi {customer_name}, is it the right time to speak to you about your {application_type} application?")
+            twiml_response.say(
+                f"Hi {customer_name}, is it the right time to speak to you about your {display_type} application?",
+                voice='Polly.Aditi'
+            )
             
             # Create a new gather for this step
             next_url = f"/handle-call?application_type={quote(application_type)}&name={quote(customer_name)}&step=1&phone_number={quote(phone_number if phone_number else '')}"
@@ -458,7 +467,10 @@ def handle_call():
         # If it's step 1 (after they've confirmed it's a good time)
         elif step == 1:
             if previous_response and any(word in previous_response.lower() for word in ['yes', 'okay', 'sure', 'go ahead']):
-                twiml_response.say(f"Great! I'll ask you a few questions to evaluate your {application_type} application.")
+                twiml_response.say(
+                    f"Great! I'll ask you a few questions to evaluate your {display_type} application.",
+                    voice='Polly.Aditi'
+                )
                 twiml_response.pause(length=1)
                 
                 next_url = f"/handle-call?application_type={quote(application_type)}&name={quote(customer_name)}&step=2&phone_number={quote(phone_number if phone_number else '')}"
@@ -468,9 +480,12 @@ def handle_call():
                     timeout=5,
                     method='POST'
                 )
-                gather.say(questions[0])
+                gather.say(questions[0], voice='Polly.Aditi')
             else:
-                twiml_response.say("I understand this isn't a good time. We'll call you back later. Thank you!")
+                twiml_response.say(
+                    "I understand this isn't a good time. We'll call you back later. Thank you!",
+                    voice='Polly.Aditi'
+                )
                 twiml_response.hangup()
         
         # If we're in the middle of questions (step 2 onwards)
@@ -494,12 +509,15 @@ def handle_call():
                     timeout=5,
                     method='POST'
                 )
-                gather.say(questions[question_index])
+                gather.say(questions[question_index], voice='Polly.Aditi')
                 print(f"Asked question: {questions[question_index]}")
             else:
                 # Process final step
                 print("All questions completed, processing final step")
-                twiml_response.say("Thank you for providing all the information. I'll now evaluate your application.")
+                twiml_response.say(
+                    "Thank you for providing all the information. I'll now evaluate your application.",
+                    voice='Polly.Aditi'
+                )
                 twiml_response.pause(length=1)
                 
                 try:
@@ -531,14 +549,26 @@ def handle_call():
                     financial_system.send_application_sms(customer_name, phone_number, application_type, result)
                     
                     # Complete the call
-                    twiml_response.say(f"Based on the information provided, your {application_type} application status is: {result}")
-                    twiml_response.say("You will receive an SMS with the detailed result shortly.")
-                    twiml_response.say("Thank you for using our service. Goodbye!")
+                    twiml_response.say(
+                        f"Based on the information provided, your {display_type} application status is: {result}",
+                        voice='Polly.Aditi'
+                    )
+                    twiml_response.say(
+                        "You will receive an SMS with the detailed result shortly.",
+                        voice='Polly.Aditi'
+                    )
+                    twiml_response.say(
+                        "Thank you for using our service. Goodbye!",
+                        voice='Polly.Aditi'
+                    )
                     twiml_response.hangup()
                     
                 except Exception as process_error:
                     print(f"Error in final processing: {str(process_error)}")
-                    twiml_response.say("I apologize, but there was an error processing your application. Our team will contact you shortly.")
+                    twiml_response.say(
+                        "I apologize, but there was an error processing your application. Our team will contact you shortly.",
+                        voice='Polly.Aditi'
+                    )
                     twiml_response.hangup()
         
         # If this is the final step or there's an error, remove from active calls
