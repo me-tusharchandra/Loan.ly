@@ -54,7 +54,7 @@ def validate_twilio_request(f):
         # For ngrok URLs, we need to ensure we're using https and the correct host
         if 'ngrok' in url:
             # Get the base URL from environment
-            base_url = os.environ.get('BASE_URL', '').rstrip('/')
+            base_url = "https://aad1-14-139-238-54.ngrok-free.app"
             if base_url:
                 # Reconstruct the URL using the base_url and the path
                 url = f"{base_url}{request.path}"
@@ -146,27 +146,31 @@ class Loanly:
         Applicant Profile: {json.dumps(application_data, indent=2)}
 
         Decisioning Criteria:
-        1. Age: 18-60 years
+        1. Age: >=18 years
         2. Minimum monthly income: ₹25,000
         3. CIBIL Score: Above 600
         4. Loan-to-income ratio: Max 4x annual income
 
-        Provide recommendation:
-        - APPROVED
-        - REJECTED
-        - NEEDS_FURTHER_VERIFICATION
+        Based on the above criteria, respond with exactly one of these three options:
+        YES (if application meets all criteria)
+        NO (if application clearly fails criteria)
+        INVESTIGATION_REQUIRED (if more information needed)
         """
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a loan decisioning expert for Indian applicants."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=300
-        )
-        
-        return response.choices[0].message.content.strip()
+        try:
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a loan decisioning expert. Respond only with YES, NO, or INVESTIGATION_REQUIRED."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error in loan evaluation: {str(e)}")
+            return "INVESTIGATION_REQUIRED"
 
     def evaluate_cc_application(self, application_data):
         prompt = f"""
@@ -180,22 +184,26 @@ class Loanly:
         4. No recent payment defaults
         5. Stable employment
 
-        Provide recommendation:
-        - APPROVED
-        - REJECTED
-        - NEEDS_FURTHER_VERIFICATION
+        Based on the above criteria, respond with exactly one of these three options:
+        YES (if application meets all criteria)
+        NO (if application clearly fails criteria)
+        INVESTIGATION_REQUIRED (if more information needed)
         """
 
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a credit card decisioning expert for Indian applicants."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=300
-        )
-        
-        return response.choices[0].message.content.strip()
+        try:
+            client = openai.OpenAI()
+            response = client.chat.completions.create(
+                model="gpt-4",
+                messages=[
+                    {"role": "system", "content": "You are a credit card decisioning expert. Respond only with YES, NO, or INVESTIGATION_REQUIRED."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300
+            )
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            print(f"Error in credit card evaluation: {str(e)}")
+            return "INVESTIGATION_REQUIRED"
 
     def save_application_result(self, name, phone_number, result, application_type):
         result_data = {
@@ -216,36 +224,6 @@ class Loanly:
             json.dump(result_data, f, indent=2)
         
         return filename
-
-    def send_application_sms(self, customer_name, phone_number, application_type, result):
-        try:
-            client = Client(
-                self.twilio_account_sid,
-                self.twilio_auth_token
-            )
-            
-            # Convert application_type for display
-            display_type = "credit card" if application_type == "credit_card" else application_type
-            
-            if result == "APPROVED":
-                sms_message = f"Congratulations {customer_name}! Your {display_type} application has been APPROVED. Our team will contact you shortly with next steps."
-            elif result == "REJECTED":
-                sms_message = f"We regret to inform you that your {display_type} application has been REJECTED at this time. Please try again after 3 months."
-            else:
-                sms_message = f"Thank you for your {display_type} application. We need some additional verification. Our team will contact you shortly."
-            
-            print(f"Sending SMS: {sms_message}")
-            message = client.messages.create(
-                body=sms_message,
-                from_=self.twilio_phone_number,
-                to=phone_number
-            )
-            print(f"SMS sent successfully: {message.sid}")
-            return True
-            
-        except Exception as sms_error:
-            print(f"Error sending SMS: {str(sms_error)}")
-            return False
 
 financial_system = Loanly()
 
@@ -276,7 +254,7 @@ def initiate_automated_call(application_type):
     twilio_sid = os.environ.get('TWILIO_ACCOUNT_SID')
     twilio_token = os.environ.get('TWILIO_AUTH_TOKEN')
     twilio_number = os.environ.get('TWILIO_PHONE_NUMBER')
-    base_url = os.environ.get('BASE_URL', '').rstrip('/')
+    base_url = "https://aad1-14-139-238-54.ngrok-free.app"
     
     print("\n=== Call Configuration ===")
     print(f"Application Type: {application_type}")
@@ -412,13 +390,6 @@ def initiate_automated_call(application_type):
 @app.route('/handle-call', methods=['POST', 'GET'])
 @validate_twilio_request
 def handle_call():
-    print("\n=== Starting handle-call ===")
-    print(f"Request Method: {request.method}")
-    print(f"Request Args: {request.args}")
-    print(f"Request Values: {request.values}")
-    print(f"Request Headers: {dict(request.headers)}")
-    print(f"Request Body: {request.get_data()}")
-    
     try:
         # Get parameters from either args or form data
         application_type = request.args.get('application_type') or request.form.get('application_type')
@@ -497,11 +468,109 @@ def handle_call():
                 print(f"Received response for question {step-2}: {previous_response}")
                 session_key = f"{phone_number}_{application_type}"
                 if session_key not in active_calls:
-                    active_calls[session_key] = {'responses': {}}
+                    active_calls[session_key] = {'responses': {}, 'customer_name': customer_name}
                 active_calls[session_key]['responses'][step-2] = previous_response
             
             question_index = step - 2  # Adjust for the initial confirmation step
-            if question_index < len(questions):
+            
+            # Check if we've collected all responses
+            if question_index >= len(questions):
+                print("All questions completed, processing application")
+                session_key = f"{phone_number}_{application_type}"
+                
+                if session_key in active_calls and 'responses' in active_calls[session_key]:
+                    # Process application data
+                    application_data = {}
+                    for q_index, response in active_calls[session_key]['responses'].items():
+                        key = questions[int(q_index)].rstrip('?').lower().replace(' ', '_')
+                        application_data[key] = response
+                    
+                    try:
+                        # Evaluate application
+                        if application_type == 'loan':
+                            result = financial_system.evaluate_loan_application(application_data)
+                        else:
+                            result = financial_system.evaluate_cc_application(application_data)
+                        
+                        # Save result
+                        saved_file = financial_system.save_application_result(
+                            customer_name,
+                            phone_number,
+                            result,
+                            application_type
+                        )
+                        
+                        # Mark that we're about to deliver the verdict
+                        active_calls[session_key]['verdict_delivered'] = True
+                        
+                        # First, thank them for their responses
+                        twiml_response.say(
+                            "Thank you for providing all the information. Let me process your application.",
+                            voice='Polly.Aditi'
+                        )
+                        twiml_response.pause(length=1)
+                        
+                        # Inform user through voice
+                        if result == "YES":
+                            twiml_response.say(
+                                f"Great news! Based on your responses, your {display_type} application has been approved.",
+                                voice='Polly.Aditi'
+                            )
+                            twiml_response.pause(length=1)
+                            twiml_response.say(
+                                "Our executive will contact you within 24 hours with the next steps.",
+                                voice='Polly.Aditi'
+                            )
+                            
+                        elif result == "NO":
+                            twiml_response.say(
+                                f"I regret to inform you that based on your responses, we cannot approve your {display_type} application at this time.",
+                                voice='Polly.Aditi'
+                            )
+                            twiml_response.pause(length=1)
+                            twiml_response.say(
+                                "You may apply again after 3 months. Thank you for considering our services.",
+                                voice='Polly.Aditi'
+                            )
+                            
+                        else:  # INVESTIGATION_REQUIRED
+                            twiml_response.say(
+                                f"Thank you for providing the information. Your {display_type} application requires additional verification.",
+                                voice='Polly.Aditi'
+                            )
+                            twiml_response.pause(length=1)
+                            twiml_response.say(
+                                "Our executive will contact you within 24 hours to collect more details.",
+                                voice='Polly.Aditi'
+                            )
+                        
+                        # Add a farewell message
+                        twiml_response.pause(length=1)
+                        twiml_response.say(
+                            "Thank you for choosing our services. Have a great day!",
+                            voice='Polly.Aditi'
+                        )
+                        
+                        # Clean up session only after verdict is delivered
+                        if session_key in active_calls:
+                            del active_calls[session_key]
+                        
+                        # Now hang up after delivering the result
+                        twiml_response.hangup()
+                        
+                        return Response(str(twiml_response), mimetype='text/xml')
+                        
+                    except Exception as e:
+                        print(f"Error processing application: {str(e)}")
+                        twiml_response.say(
+                            "I apologize, but there was an error processing your application. Our team will contact you shortly.",
+                            voice='Polly.Aditi'
+                        )
+                        twiml_response.hangup()
+                        return Response(str(twiml_response), mimetype='text/xml')
+
+            else:
+                # Continue with next question
                 next_url = f"/handle-call?application_type={quote(application_type)}&name={quote(customer_name)}&step={step+1}&phone_number={quote(phone_number if phone_number else '')}"
                 gather = twiml_response.gather(
                     input='speech',
@@ -511,97 +580,18 @@ def handle_call():
                 )
                 gather.say(questions[question_index], voice='Polly.Aditi')
                 print(f"Asked question: {questions[question_index]}")
-            else:
-                # Process final step
-                print("All questions completed, processing final step")
-                twiml_response.say(
-                    "Thank you for providing all the information. I'll now evaluate your application.",
-                    voice='Polly.Aditi'
-                )
-                twiml_response.pause(length=1)
-                
-                try:
-                    # Process application data and send result
-                    session_key = f"{phone_number}_{application_type}"
-                    application_data = {}
-                    if session_key in active_calls and 'responses' in active_calls[session_key]:
-                        responses = active_calls[session_key]['responses']
-                        for q_index, question in enumerate(questions):
-                            if q_index in responses:
-                                key = question.rstrip('?').lower().replace(' ', '_')
-                                application_data[key] = responses[q_index]
-                    
-                    # Evaluate application
-                    if application_type == 'loan':
-                        result = financial_system.evaluate_loan_application(application_data)
-                    else:
-                        result = financial_system.evaluate_cc_application(application_data)
-                    
-                    # Save result and send SMS
-                    saved_file = financial_system.save_application_result(
-                        customer_name,
-                        phone_number,
-                        result,
-                        application_type
-                    )
-                    
-                    # Send SMS
-                    financial_system.send_application_sms(customer_name, phone_number, application_type, result)
-                    
-                    # Complete the call
-                    twiml_response.say(
-                        f"Based on the information provided, your {display_type} application status is: {result}",
-                        voice='Polly.Aditi'
-                    )
-                    twiml_response.say(
-                        "You will receive an SMS with the detailed result shortly.",
-                        voice='Polly.Aditi'
-                    )
-                    twiml_response.say(
-                        "Thank you for using our service. Goodbye!",
-                        voice='Polly.Aditi'
-                    )
-                    twiml_response.hangup()
-                    
-                except Exception as process_error:
-                    print(f"Error in final processing: {str(process_error)}")
-                    twiml_response.say(
-                        "I apologize, but there was an error processing your application. Our team will contact you shortly.",
-                        voice='Polly.Aditi'
-                    )
-                    twiml_response.hangup()
         
-        # If this is the final step or there's an error, remove from active calls
-        if (step >= len(questions) + 2 or 
-            'Hangup' in request.values or 
-            'CallStatus' in request.values and request.values['CallStatus'] in ['completed', 'failed', 'busy', 'no-answer']):
-            if phone_number in active_calls:
-                del active_calls[phone_number]
-                print(f"Removed {phone_number} from active calls")
-        
-        # Return the TwiML response with proper headers
-        return Response(
-            str(twiml_response),
-            mimetype='text/xml',
-            headers={
-                'Content-Type': 'text/xml; charset=utf-8',
-                'Cache-Control': 'no-cache'
-            }
-        )
+        return Response(str(twiml_response), mimetype='text/xml')
         
     except Exception as e:
         print(f"Critical error in handle-call: {str(e)}")
         error_response = VoiceResponse()
-        error_response.say("I apologize, but there was an error. We will call you back later.")
-        error_response.hangup()
-        return Response(
-            str(error_response),
-            mimetype='text/xml',
-            headers={
-                'Content-Type': 'text/xml; charset=utf-8',
-                'Cache-Control': 'no-cache'
-            }
+        error_response.say(
+            "I apologize, but there was an error. We will call you back later.",
+            voice='Polly.Aditi'
         )
+        error_response.hangup()
+        return Response(str(error_response), mimetype='text/xml')
 
 @app.route('/process-application', methods=['POST'])
 def process_application():
@@ -653,6 +643,40 @@ def debug_env():
         'base_url': os.environ.get('BASE_URL', 'not set')
     })
 
+def process_incomplete_application(phone_number, call_data):
+    """Process application when call ends prematurely"""
+    try:
+        # Find the session key
+        session_keys = [k for k in active_calls.keys() if k.startswith(phone_number) or k == phone_number]
+        
+        for session_key in session_keys:
+            session_data = active_calls.get(session_key, {})
+            
+            # Skip processing if we've already delivered the verdict
+            if session_data.get('verdict_delivered'):
+                print(f"Verdict already delivered for {phone_number}")
+                continue
+                
+            if isinstance(session_data, dict) and 'responses' in session_data:
+                # Get application details
+                application_type = session_key.split('_')[1] if '_' in session_key else 'unknown'
+                customer_name = session_data.get('customer_name', 'Unknown')
+                
+                # Process responses if we have enough information
+                if len(session_data['responses']) >= 5:  # At least 5 questions answered
+                    print(f"Processing responses for {phone_number}")
+                    # Mark that we're processing this application
+                    active_calls[session_key]['processing'] = True
+                    
+                    # Clean up the session after processing
+                    if session_key in active_calls:
+                        del active_calls[session_key]
+                else:
+                    print(f"Not enough information collected for {phone_number} to process application")
+            
+    except Exception as e:
+        print(f"Error processing incomplete application: {str(e)}")
+
 @app.route('/call-status', methods=['POST', 'OPTIONS'])
 @validate_twilio_request
 def call_status():
@@ -670,7 +694,12 @@ def call_status():
     print(f"All values: {dict(request.values)}")
     print(f"Client IP: {request.remote_addr}")
     
-    # For status callbacks, return a simple 200 OK
+    # Process application if call ended
+    if request.values.get('CallStatus') in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
+        phone_number = request.values.get('To')
+        if phone_number:
+            process_incomplete_application(phone_number, dict(request.values))
+    
     return '', 200
 
 @app.route('/health')

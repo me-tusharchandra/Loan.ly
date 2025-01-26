@@ -2,4 +2,5 @@
 flask_session/
 app.log
 notes.md
-response.json
+responses/
+applications/
