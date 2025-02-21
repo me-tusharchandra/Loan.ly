@@ -1,0 +1,12 @@
+flask==3.0.2
+twilio==8.13.0
+uvicorn
+requests
+openai
+flask_cors
+flask-restx==1.3.0
+python-dotenv
+fastapi
+websockets
+python-multipart
+pydantic
