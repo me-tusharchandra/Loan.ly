@@ -1,22 +1,57 @@
 import os
 import json
 import openai
-from functools import wraps
 from flask_cors import CORS
 from datetime import datetime
 from urllib.parse import quote
 from twilio.rest import Client
 from flask import Flask, request, jsonify, Response
-from twilio.request_validator import RequestValidator
 from twilio.twiml.voice_response import VoiceResponse, Say
+from twilio.request_validator import RequestValidator
+from functools import wraps
+
+def format_phone_number(phone):
+    """
+    Format phone number to ensure it has the correct prefix
+    - Removes any spaces, dashes, or parentheses
+    - Adds +91 prefix for Indian numbers if not present
+    """
+    if not phone:
+        return None
+        
+    # Remove any non-digit characters except '+'
+    cleaned = ''.join(char for char in phone if char.isdigit() or char == '+')
+    
+    # If number starts with '0', remove it
+    if cleaned.startswith('0'):
+        cleaned = cleaned[1:]
+    
+    # If number starts with '91', ensure it has '+'
+    if cleaned.startswith('91'):
+        cleaned = '+' + cleaned
+    
+    # If number doesn't have any prefix, add '+91'
+    if not cleaned.startswith('+'):
+        if cleaned.startswith('91'):
+            cleaned = '+' + cleaned
+        else:
+            cleaned = '+91' + cleaned
+    
+    # Validate the final format
+    if not cleaned.startswith('+91') or len(cleaned) != 13:
+        return None
+            
+    return cleaned
+
+# Global base URL - Change this as needed
+BASE_URL = "https://3b9c-152-58-116-119.ngrok-free.app"
 
 app = Flask(__name__)
-
 
 # Updated CORS configuration
 CORS(app, resources={
     r"/*": {
-        "origins": ["http://localhost:3000"],  # Add your frontend URL
+        "origins": "*",
         "methods": ["GET", "POST", "OPTIONS"],
         "allow_headers": [
             "Content-Type",
@@ -34,7 +69,7 @@ CORS(app, resources={
 # Add security headers middleware
 @app.after_request
 def after_request(response):
-    response.headers.add('Access-Control-Allow-Origin', 'http://localhost:3000')
+    response.headers.add('Access-Control-Allow-Origin', '*')
     response.headers.add('Access-Control-Allow-Headers', 'Content-Type,X-Twilio-Signature,Authorization')
     response.headers.add('Access-Control-Allow-Methods', 'GET,POST,OPTIONS')
     return response
@@ -54,8 +89,8 @@ def validate_twilio_request(f):
         
         # For ngrok URLs, we need to ensure we're using https and the correct host
         if 'ngrok' in url:
-            # Get the forwarded proto and host from headers
-            forwarded_proto = request.headers.get('X-Forwarded-Proto', 'http')
+            # Get the forwarded host and proto from headers
+            forwarded_proto = request.headers.get('X-Forwarded-Proto', 'https')
             forwarded_host = request.headers.get('X-Forwarded-Host', '')
             
             if forwarded_host:
@@ -69,8 +104,7 @@ def validate_twilio_request(f):
             if request.is_json:
                 post_data = request.get_json() or {}
             else:
-                # Convert ImmutableMultiDict to regular dict
-                post_data = dict(request.form.items())
+                post_data = request.form.to_dict()
         else:
             post_data = {}
             
@@ -84,7 +118,7 @@ def validate_twilio_request(f):
         print(f"Client IP: {request.remote_addr}")
         
         # Skip validation in development/testing
-        if os.environ.get('FLASK_ENV') == 'development':
+        if os.environ.get('FLASK_ENV') == 'testing':
             print("Skipping validation - development mode")
             return f(*args, **kwargs)
         
@@ -239,93 +273,173 @@ def home():
         "message": "Server is running"
     })
 
-@app.route('/initiate-call', methods=['POST'])
-def initiate_call():
+@app.route('/call', methods=['POST'])
+def call():
     # Add debug logging
-    print("Received initiate-call request")
+    print("Received call request")
     print("Environment variables status:")
     print(f"TWILIO_ACCOUNT_SID exists: {bool(os.environ.get('TWILIO_ACCOUNT_SID'))}")
     print(f"TWILIO_AUTH_TOKEN exists: {bool(os.environ.get('TWILIO_AUTH_TOKEN'))}")
     print(f"TWILIO_PHONE_NUMBER exists: {bool(os.environ.get('TWILIO_PHONE_NUMBER'))}")
+    
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "No data provided"}), 400
+        
+    application_type = data.get('type')
+    if not application_type or application_type not in ['loan', 'cc']:
+        return jsonify({"error": "Invalid or missing application type. Must be 'loan' or 'cc'"}), 400
+    
+    # Format and validate the phone number
+    phone = data.get('phone')
+    if not phone:
+        return jsonify({"error": "Phone number is required"}), 400
+        
+    formatted_phone = format_phone_number(phone)
+    if not formatted_phone:
+        return jsonify({
+            "error": "Invalid phone number format",
+            "message": "Phone number must be a valid Indian number with 10 digits and proper country code (e.g., +91XXXXXXXXXX)"
+        }), 400
+        
+    data['phone'] = formatted_phone
+        
+    # Convert cc to credit_card for internal processing
+    if application_type == 'cc':
+        application_type = 'credit_card'
+        
+    return initiate_automated_call(application_type)
+
+def initiate_automated_call(application_type):
+    # Get credentials
+    twilio_sid = os.environ.get('TWILIO_ACCOUNT_SID')
+    twilio_token = os.environ.get('TWILIO_AUTH_TOKEN')
+    twilio_number = os.environ.get('TWILIO_PHONE_NUMBER')
+    
+    print("\n=== Call Configuration ===")
+    print(f"Application Type: {application_type}")
+    print(f"Base URL: {BASE_URL}")
+    print(f"Twilio Phone: {twilio_number}")
+    print(f"Twilio SID exists: {bool(twilio_sid)}")
+    print(f"Twilio Token exists: {bool(twilio_token)}")
+    
+    # Validate ngrok URL
+    if 'ngrok' in BASE_URL:
+        try:
+            import requests
+            # Add more detailed debugging
+            print(f"Testing connection to ngrok URL...")
+            print(f"Making GET request to: {BASE_URL}/health")
+            
+            response = requests.get(f"{BASE_URL}/health", timeout=5)
+            print(f"Response status code: {response.status_code}")
+            print(f"Response body: {response.text}")
+            
+            if response.status_code != 200:
+                print(f"WARNING: Base URL {BASE_URL} returned status code {response.status_code}")
+                return jsonify({
+                    "error": "Server endpoint not accessible",
+                    "details": f"Endpoint returned status {response.status_code}. Please ensure your Flask app is running on port 5001"
+                }), 503
+        except requests.exceptions.ConnectionError as e:
+            print(f"ERROR: Connection failed to {BASE_URL}")
+            print(f"Error details: {str(e)}")
+            return jsonify({
+                "error": "Cannot connect to server",
+                "details": "Please ensure both Flask app and ngrok are running correctly"
+            }), 503
+        except Exception as e:
+            print(f"ERROR: Unexpected error connecting to {BASE_URL}: {str(e)}")
+            return jsonify({
+                "error": "Server endpoint not accessible",
+                "details": str(e)
+            }), 503
+
+    print(f"Processing {application_type} call request")
+    print(f"Using base URL: {BASE_URL}")
+    
+    if not all([twilio_sid, twilio_token, twilio_number, BASE_URL]):
+        missing = {
+            "TWILIO_ACCOUNT_SID": twilio_sid is None,
+            "TWILIO_AUTH_TOKEN": twilio_token is None,
+            "TWILIO_PHONE_NUMBER": twilio_number is None,
+            "BASE_URL": BASE_URL is None
+        }
+        print(f"Missing credentials: {missing}")
+        return jsonify({
+            "error": "Missing required credentials",
+            "missing": missing
+        }), 400
 
     try:
         data = request.get_json()
-        application_type = data.get('application_type')
-        customer_number = data.get('phone_number')
+        print(f"\n=== Request Data ===")
+        print(f"Received data: {data}")
+        
+        customer_number = format_phone_number(data.get('phone'))
         customer_name = data.get('name', 'Customer')
-
-        # Validate required fields
-        if not all([application_type, customer_number, customer_name]):
-            return jsonify({
-                "error": "Missing required fields",
-                "required": ["application_type", "phone_number", "name"]
-            }), 400
-
-        # Validate application type
-        if application_type not in ['credit_card', 'loan']:
-            return jsonify({
-                "error": "Invalid application type",
-                "valid_types": ["credit_card", "loan"]
-            }), 400
-
-        # Get credentials
-        twilio_sid = os.environ.get('TWILIO_ACCOUNT_SID')
-        twilio_token = os.environ.get('TWILIO_AUTH_TOKEN')
-        twilio_number = os.environ.get('TWILIO_PHONE_NUMBER')
-        base_url = "https://aad1-14-139-238-54.ngrok-free.app"  # Update this with your ngrok URL
-
-        if not all([twilio_sid, twilio_token, twilio_number, base_url]):
-            return jsonify({
-                "error": "Missing required credentials"
-            }), 500
-
-        # Check for active calls
+        
+        # Check if there's already an active call for this number
         if customer_number in active_calls:
             last_call_time = active_calls[customer_number]['timestamp']
             time_diff = datetime.now() - last_call_time
             
-            if time_diff.total_seconds() < 5:
+            if time_diff.total_seconds() < 30:
                 return jsonify({
                     "error": "Call in progress",
-                    "message": "There is already an active call for this number"
+                    "message": "There is already an active call for this number. Please wait for it to complete.",
+                    "call_sid": active_calls[customer_number]['call_sid']
                 }), 409
+            else:
+                del active_calls[customer_number]
 
+        print(f"Initiating call to {customer_number} for {customer_name}")
+        
         # Construct webhook URL
         callback_url = (
-            f"{base_url}/handle-call"
+            f"{BASE_URL}/handle-call"
             f"?application_type={quote(application_type)}"
             f"&name={quote(customer_name)}"
             f"&step=0"
             f"&phone_number={quote(customer_number)}"
         )
-
-        # Make the call
+        
+        print(f"\n=== Making Twilio Call ===")
+        print(f"To: {customer_number}")
+        print(f"From: {twilio_number}")
+        print(f"Webhook URL: {callback_url}")
+        
         client = Client(twilio_sid, twilio_token)
         call = client.calls.create(
             method='POST',
             url=callback_url,
             to=customer_number,
             from_=twilio_number,
-            status_callback=f"{base_url}/call-status",
+            status_callback=f"{BASE_URL}/call-status",
             status_callback_event=['initiated', 'ringing', 'answered', 'completed'],
             status_callback_method='POST'
         )
-
-        # Store call info
+        
+        print(f"\n=== Call Initiated ===")
+        print(f"Call SID: {call.sid}")
+        print(f"Status: {call.status}")
+        
+        # Store call info and return response as before...
         active_calls[customer_number] = {
             'call_sid': call.sid,
             'timestamp': datetime.now(),
             'customer_name': customer_name,
             'application_type': application_type
         }
-
+        
         return jsonify({
-            "message": f"Starting {application_type} application call",
+            "message": f"Starting {application_type} application call", 
             "call_sid": call.sid,
             "customer": customer_name,
-            "phone": customer_number
+            "phone": customer_number,
+            "webhook_url": callback_url
         })
-
+        
     except Exception as e:
         print(f"Error initiating call: {str(e)}")
         return jsonify({
@@ -419,102 +533,37 @@ def handle_call():
             
             question_index = step - 2  # Adjust for the initial confirmation step
             
-            # Check if we've collected all responses
-            if question_index >= len(questions):
-                print("All questions completed, processing application")
-                session_key = f"{phone_number}_{application_type}"
+            # Check if we should play outro (end of questions or call ending)
+            should_play_outro = (
+                question_index >= len(questions) - 1 or  # Last question completed
+                request.values.get('CallStatus') in ['completed', 'failed', 'busy', 'no-answer', 'canceled'] or  # Call ending
+                'Hangup' in request.values.get('Digits', '') or  # User hung up
+                request.values.get('DialCallStatus') in ['completed', 'failed', 'busy', 'no-answer', 'canceled']  # Call status in different format
+            )
+            
+            if should_play_outro:
+                print("Playing outro message...")
+                # First, thank them for their responses
+                twiml_response.say(
+                    "Thank you for providing the information. We are now evaluating your application.",
+                    voice='Polly.Aditi'
+                )
+                twiml_response.pause(length=1)
+                twiml_response.say(
+                    "Our team will reach out to you within 24 hours with the results. Have a great day!",
+                    voice='Polly.Aditi'
+                )
                 
-                if session_key in active_calls and 'responses' in active_calls[session_key]:
-                    # Process application data
-                    application_data = {}
-                    for q_index, response in active_calls[session_key]['responses'].items():
-                        key = questions[int(q_index)].rstrip('?').lower().replace(' ', '_')
-                        application_data[key] = response
-                    
-                    try:
-                        # Evaluate application
-                        if application_type == 'loan':
-                            result = financial_system.evaluate_loan_application(application_data)
-                        else:
-                            result = financial_system.evaluate_cc_application(application_data)
-                        
-                        # Save result
-                        saved_file = financial_system.save_application_result(
-                            customer_name,
-                            phone_number,
-                            result,
-                            application_type
-                        )
-                        
-                        # Mark that we're about to deliver the verdict
-                        active_calls[session_key]['verdict_delivered'] = True
-                        
-                        # First, thank them for their responses
-                        twiml_response.say(
-                            "Thank you for providing all the information. Let me process your application.",
-                            voice='Polly.Aditi'
-                        )
-                        twiml_response.pause(length=1)
-                        
-                        # Inform user through voice
-                        if result == "YES":
-                            twiml_response.say(
-                                f"Great news! Based on your responses, your {display_type} application has been approved.",
-                                voice='Polly.Aditi'
-                            )
-                            twiml_response.pause(length=1)
-                            twiml_response.say(
-                                "Our executive will contact you within 24 hours with the next steps.",
-                                voice='Polly.Aditi'
-                            )
-                            
-                        elif result == "NO":
-                            twiml_response.say(
-                                f"I regret to inform you that based on your responses, we cannot approve your {display_type} application at this time.",
-                                voice='Polly.Aditi'
-                            )
-                            twiml_response.pause(length=1)
-                            twiml_response.say(
-                                "You may apply again after 3 months. Thank you for considering our services.",
-                                voice='Polly.Aditi'
-                            )
-                            
-                        else:  # INVESTIGATION_REQUIRED
-                            twiml_response.say(
-                                f"Thank you for providing the information. Your {display_type} application requires additional verification.",
-                                voice='Polly.Aditi'
-                            )
-                            twiml_response.pause(length=1)
-                            twiml_response.say(
-                                "Our executive will contact you within 24 hours to collect more details.",
-                                voice='Polly.Aditi'
-                            )
-                        
-                        # Add a farewell message
-                        twiml_response.pause(length=1)
-                        twiml_response.say(
-                            "Thank you for choosing our services. Have a great day!",
-                            voice='Polly.Aditi'
-                        )
-                        
-                        # Clean up session only after verdict is delivered
-                        if session_key in active_calls:
-                            del active_calls[session_key]
-                        
-                        # Now hang up after delivering the result
-                        twiml_response.hangup()
-                        
-                        return Response(str(twiml_response), mimetype='text/xml')
-                        
-                    except Exception as e:
-                        print(f"Error processing application: {str(e)}")
-                        twiml_response.say(
-                            "I apologize, but there was an error processing your application. Our team will contact you shortly.",
-                            voice='Polly.Aditi'
-                        )
-                        twiml_response.hangup()
-                        return Response(str(twiml_response), mimetype='text/xml')
-
+                # Mark that we're about to deliver the verdict
+                session_key = f"{phone_number}_{application_type}"
+                if session_key in active_calls:
+                    active_calls[session_key]['verdict_delivered'] = True
+                    active_calls[session_key]['outro_played'] = True
+                
+                print("Outro message played, hanging up...")
+                # Now hang up after delivering the message
+                twiml_response.hangup()
+                
             else:
                 # Continue with next question
                 next_url = f"/handle-call?application_type={quote(application_type)}&name={quote(customer_name)}&step={step+1}&phone_number={quote(phone_number if phone_number else '')}"
@@ -547,6 +596,16 @@ def process_application():
         
     name = data.get('name')
     phone_number = data.get('phone_number')
+    
+    # Format and validate phone number
+    if phone_number:
+        phone_number = format_phone_number(phone_number)
+        if not phone_number:
+            return jsonify({
+                "error": "Invalid phone number format",
+                "message": "Phone number must be a valid Indian number with 10 digits and proper country code (e.g., +91XXXXXXXXXX)"
+            }), 400
+            
     application_type = data.get('application_type')
     application_data = data.get('application_data')
     
@@ -608,20 +667,68 @@ def process_incomplete_application(phone_number, call_data):
                 application_type = session_key.split('_')[1] if '_' in session_key else 'unknown'
                 customer_name = session_data.get('customer_name', 'Unknown')
                 
-                # Process responses if we have enough information
-                if len(session_data['responses']) >= 5:  # At least 5 questions answered
-                    print(f"Processing responses for {phone_number}")
-                    # Mark that we're processing this application
-                    active_calls[session_key]['processing'] = True
-                    
-                    # Clean up the session after processing
-                    if session_key in active_calls:
-                        del active_calls[session_key]
+                print(f"Processing responses for {phone_number}")
+                
+                # Create responses directory if it doesn't exist
+                if not os.path.exists('responses'):
+                    os.makedirs('responses')
+                
+                # Get verdict from OpenAI
+                try:
+                    if application_type == 'credit_card':
+                        verdict = financial_system.evaluate_cc_application(session_data['responses'])
+                    else:
+                        verdict = financial_system.evaluate_loan_application(session_data['responses'])
+                except Exception as e:
+                    print(f"Error getting verdict: {str(e)}")
+                    verdict = "INVESTIGATION_REQUIRED"
+                
+                # Generate comments based on the verdict
+                comments = []
+                if verdict == "YES":
+                    comments.append("Application meets all eligibility criteria")
+                elif verdict == "NO":
+                    comments.append("Application does not meet minimum eligibility requirements")
                 else:
-                    print(f"Not enough information collected for {phone_number} to process application")
+                    comments.append("Further verification and documentation required")
+                    
+                # Add call-specific comments
+                if call_data.get('CallDuration'):
+                    duration = int(call_data.get('CallDuration', 0))
+                    if duration < 30:
+                        comments.append("Call duration was too short - incomplete information")
+                    elif duration < 60:
+                        comments.append("Partial information collected")
+                
+                # Prepare clean response data
+                response_data = {
+                    "customer_name": customer_name,
+                    "phone_number": phone_number,
+                    "application_type": "Credit Card" if application_type == 'credit_card' else "Loan",
+                    "verdict": verdict,
+                    "comments": comments,
+                    "timestamp": datetime.now().isoformat(),
+                    "call_duration": call_data.get('CallDuration'),
+                    "call_status": call_data.get('CallStatus')
+                }
+                
+                # Save to JSON file with timestamp and phone number
+                filename = f"responses/{datetime.now().strftime('%Y%m%d_%H%M%S')}_{phone_number}.json"
+                with open(filename, 'w') as f:
+                    json.dump(response_data, f, indent=2)
+                
+                print(f"Saved responses to {filename} with verdict: {verdict}")
+                
+                # Mark that we're processing this application
+                active_calls[session_key]['processing'] = True
+                
+                # Clean up the session after processing
+                if session_key in active_calls:
+                    del active_calls[session_key]
             
     except Exception as e:
         print(f"Error processing incomplete application: {str(e)}")
+        print(f"Session data: {session_data if 'session_data' in locals() else 'Not available'}")
 
 @app.route('/call-status', methods=['POST', 'OPTIONS'])
 @validate_twilio_request
@@ -644,7 +751,24 @@ def call_status():
     if request.values.get('CallStatus') in ['completed', 'failed', 'busy', 'no-answer', 'canceled']:
         phone_number = request.values.get('To')
         if phone_number:
+            # Create a TwiML response for the outro
+            twiml_response = VoiceResponse()
+            twiml_response.say(
+                "Thank you for providing the information. We are now evaluating your application.",
+                voice='Polly.Aditi'
+            )
+            twiml_response.pause(length=1)
+            twiml_response.say(
+                "Our team will reach out to you within 24 hours with the results. Have a great day!",
+                voice='Polly.Aditi'
+            )
+            twiml_response.hangup()
+            
+            # Process the application
             process_incomplete_application(phone_number, dict(request.values))
+            
+            # Return the TwiML response
+            return Response(str(twiml_response), mimetype='text/xml')
     
     return '', 200
 
@@ -665,5 +789,4 @@ def health_check():
         }), 500
 
 if __name__ == '__main__':
-    # Try different ports if 5001 is in use
     app.run(port=5001, debug=True)

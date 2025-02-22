@@ -58,22 +58,22 @@ function App() {
     setIsSubmitting(true);
     
     try {
-      console.log('Sending request to:', `${BASE_URL}/initiate-call`);
+      console.log('Sending request to:', `${BASE_URL}/call`);
       console.log('Request body:', {
         name: name.trim(),
-        phone_number: formattedPhone,
-        application_type: creditType === 'creditCard' ? 'credit_card' : 'loan'
+        phone: formattedPhone,
+        type: creditType === 'creditCard' ? 'cc' : 'loan'
       });
 
-      const response = await fetch(`${BASE_URL}/initiate-call`, {
+      const response = await fetch(`${BASE_URL}/call`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           name: name.trim(),
-          phone_number: formattedPhone,
-          application_type: creditType === 'creditCard' ? 'credit_card' : 'loan'
+          phone: formattedPhone,
+          type: creditType === 'creditCard' ? 'cc' : 'loan'
         }),
       });
 
@@ -84,6 +84,11 @@ function App() {
       }
 
       toast.success('Call initiated successfully! You will receive a call shortly.');
+      
+      // Clear form after successful submission
+      setName('');
+      setPhone('');
+      setCreditType('creditCard');
       
     } catch (error) {
       console.error('Error details:', {
