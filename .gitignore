@@ -2,3 +2,5 @@
 flask_session/
 venv/
 responses/
+.DS_Store
+

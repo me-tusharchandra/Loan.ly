@@ -1,14 +1,14 @@
 import os
 import json
 import openai
+from functools import wraps
 from flask_cors import CORS
 from datetime import datetime
 from urllib.parse import quote
 from twilio.rest import Client
 from flask import Flask, request, jsonify, Response
-from twilio.twiml.voice_response import VoiceResponse, Say
 from twilio.request_validator import RequestValidator
-from functools import wraps
+from twilio.twiml.voice_response import VoiceResponse, Say
 
 def format_phone_number(phone):
     """
@@ -44,7 +44,7 @@ def format_phone_number(phone):
     return cleaned
 
 # Global base URL - Change this as needed
-BASE_URL = "https://3b9c-152-58-116-119.ngrok-free.app"
+BASE_URL = "https://1b30-2409-40d0-1332-b482-d886-b19e-bb55-fc51.ngrok-free.app"
 
 app = Flask(__name__)
 
